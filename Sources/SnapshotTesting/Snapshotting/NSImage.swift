@@ -53,17 +53,17 @@ extension Snapshotting where Value == NSImage, Format == NSImage {
 }
 
 private func NSImagePNGRepresentation(_ image: NSImage) -> Data? {
-  guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+  guard let cgImage = image.cgImage else { return nil }
   let rep = NSBitmapImageRep(cgImage: cgImage)
   rep.size = image.size
   return rep.representation(using: .png, properties: [:])
 }
 
 private func compare(_ old: NSImage, _ new: NSImage, precision: Float, perceptualPrecision: Float) -> String? {
-  guard let oldCgImage = old.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+  guard let oldCgImage = old.cgImage else {
     return "Reference image could not be loaded."
   }
-  guard let newCgImage = new.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+  guard let newCgImage = new.cgImage else {
     return "Newly-taken snapshot could not be loaded."
   }
   guard newCgImage.width != 0, newCgImage.height != 0 else {
@@ -82,7 +82,7 @@ private func compare(_ old: NSImage, _ new: NSImage, precision: Float, perceptua
   if memcmp(oldData, newData, byteCount) == 0 { return nil }
   guard
     let pngData = NSImagePNGRepresentation(new),
-    let newerCgImage = NSImage(data: pngData)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
+    let newerCgImage = NSImage(data: pngData)?.cgImage,
     let newerContext = context(for: newerCgImage),
     let newerData = newerContext.data
   else {
@@ -135,9 +135,9 @@ private func context(for cgImage: CGImage) -> CGContext? {
   return context
 }
 
-private func diff(_ old: NSImage, _ new: NSImage) -> NSImage {
-  let oldCiImage = CIImage(cgImage: old.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
-  let newCiImage = CIImage(cgImage: new.cgImage(forProposedRect: nil, context: nil, hints: nil)!)
+func diff(_ old: NSImage, _ new: NSImage) -> NSImage {
+  let oldCiImage = CIImage(cgImage: old.cgImage!)
+  let newCiImage = CIImage(cgImage: new.cgImage!)
   let differenceFilter = CIFilter(name: "CIDifferenceBlendMode")!
   differenceFilter.setValue(oldCiImage, forKey: kCIInputImageKey)
   differenceFilter.setValue(newCiImage, forKey: kCIInputBackgroundImageKey)
