@@ -176,6 +176,7 @@ import Accelerate.vImage
 import CoreImage.CIKernel
 import MetalPerformanceShaders
 
+@_optimize(speed)
 func perceptuallyCompare(_ old: CIImage, _ new: CIImage, pixelPrecision: Float, perceptualPrecision: Float) -> String? {
   // Calculate the deltaE values. Each pixel is a value between 0-100.
   // 0 means no difference, 100 means completely opposite.
@@ -213,11 +214,12 @@ func perceptuallyCompare(_ old: CIImage, _ new: CIImage, pixelPrecision: Float, 
     var failingPixelCount: Int = 0
     // rowBytes must be a multiple of 8, so vImage_Buffer pads the end of each row with bytes to meet the multiple of 0 requirement.
     // We must do 2D iteration of the vImage_Buffer in order to avoid loading the padding garbage bytes at the end of each row.
+    let componentStride = MemoryLayout<Float>.stride
     fastForEach(in: 0..<Int(buffer.height)) { line in
       let lineOffset = buffer.rowBytes * line
       fastForEach(in: 0..<Int(buffer.width)) { column in
-        let columnOffset = lineOffset + column * MemoryLayout<Float>.size
-        let deltaE = buffer.data.load(fromByteOffset: columnOffset, as: Float.self)
+        let byteOffset = lineOffset + column * componentStride
+        let deltaE = buffer.data.load(fromByteOffset: byteOffset, as: Float.self)
         if deltaE > deltaThreshold {
           failingPixelCount += 1
           if deltaE > maximumDeltaE {
@@ -292,6 +294,10 @@ extension CIImage {
 final class ThresholdImageProcessorKernel: CIImageProcessorKernel {
   static let inputThresholdKey = "thresholdValue"
   static let device = MTLCreateSystemDefaultDevice()
+  override static var synchronizeInputs: Bool { false }
+  override static var outputIsOpaque: Bool { true }
+  override static var outputFormat: CIFormat { .Rh }
+  override static func formatForInput(at input: Int32) -> CIFormat { .Rh }
 
   static var isSupported: Bool {
     #if targetEnvironment(simulator)
@@ -332,6 +338,7 @@ final class ThresholdImageProcessorKernel: CIImageProcessorKernel {
 
 /// When the compiler doesn't have optimizations enabled, like in test targets, a `while` loop is significantly faster than a `for` loop
 /// for iterating through the elements of a memory buffer. Details can be found in [SR-6983](https://github.com/apple/swift/issues/49531#issuecomment-1108286654)
+@_optimize(speed)
 func fastForEach(in range: Range<Int>, _ body: (Int) -> Void) {
   var index = range.lowerBound
   while index < range.upperBound {
