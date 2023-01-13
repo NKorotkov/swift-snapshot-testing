@@ -183,7 +183,7 @@ func perceptuallyCompare(_ old: CIImage, _ new: CIImage, pixelPrecision: Float, 
   let deltaOutputImage = old.applyingLabDeltaE(new)
   // Setting the working color space and output color space to NSNull disables color management. This is appropriate when the output
   // of the operations is computational instead of an image intended to be displayed.
-  let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+  let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull(), .workingFormat: CIFormat.RGBAh])
   let deltaThreshold = (1 - perceptualPrecision) * 100
   let actualPixelPrecision: Float
   var maximumDeltaE: Float = .nan
@@ -214,16 +214,33 @@ func perceptuallyCompare(_ old: CIImage, _ new: CIImage, pixelPrecision: Float, 
     var failingPixelCount: Int = 0
     // rowBytes must be a multiple of 8, so vImage_Buffer pads the end of each row with bytes to meet the multiple of 0 requirement.
     // We must do 2D iteration of the vImage_Buffer in order to avoid loading the padding garbage bytes at the end of each row.
-    let componentStride = MemoryLayout<Float>.stride
-    fastForEach(in: 0..<Int(buffer.height)) { line in
-      let lineOffset = buffer.rowBytes * line
-      fastForEach(in: 0..<Int(buffer.width)) { column in
-        let byteOffset = lineOffset + column * componentStride
-        let deltaE = buffer.data.load(fromByteOffset: byteOffset, as: Float.self)
-        if deltaE > deltaThreshold {
-          failingPixelCount += 1
-          if deltaE > maximumDeltaE {
-            maximumDeltaE = deltaE
+    if #available(iOS 14.0, tvOS 14.0, macOS 11.0, *) {
+      let componentStride = MemoryLayout<Float16>.stride
+      fastForEach(in: 0..<Int(buffer.height)) { line in
+        let lineOffset = buffer.rowBytes * line
+        fastForEach(in: 0..<Int(buffer.width)) { column in
+          let byteOffset = lineOffset + column * componentStride
+          let deltaE = Float(buffer.data.load(fromByteOffset: byteOffset, as: Float16.self))
+          if deltaE > deltaThreshold {
+            failingPixelCount += 1
+            if deltaE > maximumDeltaE {
+              maximumDeltaE = deltaE
+            }
+          }
+        }
+      }
+    } else {
+      let componentStride = MemoryLayout<Float>.stride
+      fastForEach(in: 0..<Int(buffer.height)) { line in
+        let lineOffset = buffer.rowBytes * line
+        fastForEach(in: 0..<Int(buffer.width)) { column in
+          let byteOffset = lineOffset + column * componentStride
+          let deltaE = buffer.data.load(fromByteOffset: byteOffset, as: Float.self)
+          if deltaE > deltaThreshold {
+            failingPixelCount += 1
+            if deltaE > maximumDeltaE {
+              maximumDeltaE = deltaE
+            }
           }
         }
       }
@@ -266,7 +283,11 @@ extension CIImage {
   func renderSingleValue(in context: CIContext, format: CIFormat = CIFormat.Rh) -> Float? {
     guard let buffer = render(in: context, format: format) else { return nil }
     defer { buffer.free() }
-    return buffer.data.load(fromByteOffset: 0, as: Float.self)
+    if #available(iOS 14.0, tvOS 14.0, macOS 11.0, *) {
+      return Float(buffer.data.load(fromByteOffset: 0, as: Float16.self))
+    } else {
+      return buffer.data.load(fromByteOffset: 0, as: Float.self)
+    }
   }
 
   func render(in context: CIContext, format: CIFormat = CIFormat.Rh) -> vImage_Buffer? {
@@ -277,7 +298,6 @@ extension CIImage {
     // Some hardware configurations (virtualized CPU renderers) do not support 32-bit float output formats,
     // so use a compatible 16-bit float format and convert the output value to 32-bit floats.
     guard var buffer16 = try? vImage_Buffer(width: Int(extent.width), height: Int(extent.height), bitsPerPixel: 16) else { return nil }
-    defer { buffer16.free() }
     context.render(
       self,
       toBitmap: buffer16.data,
@@ -286,11 +306,16 @@ extension CIImage {
       format: format,
       colorSpace: nil
     )
-    guard
-      var buffer32 = try? vImage_Buffer(width: Int(buffer16.width), height: Int(buffer16.height), bitsPerPixel: 32),
-      vImageConvert_Planar16FtoPlanarF(&buffer16, &buffer32, 0) == kvImageNoError
-    else { return nil }
-    return buffer32
+    if #available(iOS 14.0, tvOS 14.0, macOS 11.0, *) {
+      return buffer16
+    } else {
+      defer { buffer16.free() }
+      guard
+        var buffer32 = try? vImage_Buffer(width: Int(buffer16.width), height: Int(buffer16.height), bitsPerPixel: 32),
+        vImageConvert_Planar16FtoPlanarF(&buffer16, &buffer32, 0) == kvImageNoError
+      else { return nil }
+      return buffer32
+    }
   }
 }
 
