@@ -186,7 +186,7 @@ func perceptuallyCompare(_ old: CIImage, _ new: CIImage, pixelPrecision: Float, 
   let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
   let deltaThreshold = (1 - perceptualPrecision) * 100
   let actualPixelPrecision: Float
-  var maximumDeltaE: Float = 0
+  var maximumDeltaE: Float = .nan
 
   // Metal is supported by all iOS/tvOS devices (2013 models or later) and Macs (2012 models or later).
   // Older devices do not support iOS/tvOS 13 and macOS 10.15 which are the minimum versions of swift-snapshot-testing.
@@ -203,7 +203,7 @@ func perceptuallyCompare(_ old: CIImage, _ new: CIImage, pixelPrecision: Float, 
     }
     actualPixelPrecision = 1 - averagePixel
     if actualPixelPrecision < pixelPrecision {
-      maximumDeltaE = deltaOutputImage.applyingAreaMaximum().renderSingleValue(in: context) ?? 0
+      maximumDeltaE = deltaOutputImage.applyingAreaMaximum().renderSingleValue(in: context) ?? .nan
     }
   } else {
     // Slow path - CPU based vImage buffer iteration
@@ -263,13 +263,17 @@ extension CIImage {
     applyingFilter("CIAreaMaximum", parameters: [kCIInputExtentKey: extent])
   }
 
-  func renderSingleValue(in context: CIContext) -> Float? {
-      guard let buffer = render(in: context) else { return nil }
-      defer { buffer.free() }
-      return buffer.data.load(fromByteOffset: 0, as: Float.self)
+  func renderSingleValue(in context: CIContext, format: CIFormat = CIFormat.Rh) -> Float? {
+    guard let buffer = render(in: context, format: format) else { return nil }
+    defer { buffer.free() }
+    return buffer.data.load(fromByteOffset: 0, as: Float.self)
   }
 
   func render(in context: CIContext, format: CIFormat = CIFormat.Rh) -> vImage_Buffer? {
+    render(in: context, extent: extent, format: format)
+  }
+
+  func render(in context: CIContext, extent: CGRect, format: CIFormat = CIFormat.Rh) -> vImage_Buffer? {
     // Some hardware configurations (virtualized CPU renderers) do not support 32-bit float output formats,
     // so use a compatible 16-bit float format and convert the output value to 32-bit floats.
     guard var buffer16 = try? vImage_Buffer(width: Int(extent.width), height: Int(extent.height), bitsPerPixel: 16) else { return nil }
@@ -292,6 +296,11 @@ extension CIImage {
 
 // Copied from https://developer.apple.com/documentation/coreimage/ciimageprocessorkernel
 final class ThresholdImageProcessorKernel: CIImageProcessorKernel {
+  enum ThresholdImageProcessorKernelError: Error {
+    case metalRendererUnavailable
+    case invalidInput
+  }
+
   static let inputThresholdKey = "thresholdValue"
   static let device = MTLCreateSystemDefaultDevice()
   override static var synchronizeInputs: Bool { false }
@@ -310,14 +319,17 @@ final class ThresholdImageProcessorKernel: CIImageProcessorKernel {
   }
 
   override class func process(with inputs: [CIImageProcessorInput]?, arguments: [String: Any]?, output: CIImageProcessorOutput) throws {
+    guard isSupported, let device = device else {
+      throw ThresholdImageProcessorKernelError.metalRendererUnavailable
+    }
+
     guard
-      let device = device,
       let commandBuffer = output.metalCommandBuffer,
       let input = inputs?.first,
       let sourceTexture = input.metalTexture,
       let destinationTexture = output.metalTexture,
       let thresholdValue = arguments?[inputThresholdKey] as? Float else {
-      return
+      throw ThresholdImageProcessorKernelError.invalidInput
     }
 
     let threshold = MPSImageThresholdBinary(
